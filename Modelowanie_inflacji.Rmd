@@ -1,0 +1,998 @@
+---
+title: |
+  \huge \textbf{Budowa modelu ekonometrycznego}
+subtitle: |
+  \Large \textbf{objaśniającego zmienność inflacji}
+author: |
+  | Sebastian Szklarski 
+  | Bartosz Tasak
+output:
+  pdf_document:
+    number_sections: true
+    latex_engine: xelatex
+mainfont: Arial
+fontsize: 10pt
+header-includes:
+   - \usepackage{caption} 
+   - \usepackage{graphicx}
+   - \usepackage{pdflscape}
+   - \newcommand{\blandscape}{\begin{landscape}}
+   - \newcommand{\elandscape}{\end{landscape}}
+   - \captionsetup[table]{font={small, it}, labelfont=bf, name=Tabela}
+   - \captionsetup[figure]{font={small, it}, labelfont=bf, name=Wykres}
+   - \usepackage{floatrow}
+   - \setcounter{secnumdepth}{2}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+options(OutDec = ",")
+
+library(readxl)
+library(dplyr)
+library(psych)
+library(kableExtra)
+library(ggplot2)
+library(ggcorrplot)
+library(tseries)
+library(mbstats)
+library(nortest)
+library(lmtest)
+library(forecast)
+library(car)
+
+library(showtext)
+showtext.auto()
+```
+
+```{r}
+dane <- read_xlsx("Tasak_Szklarski_projekt.xlsx")
+
+dane <- data.frame(
+  indeks = dane$indeks[3:81],
+  stopa_inflacji = dane$stopa_inflacji[3:81],
+  ceny_importowe = dane$ceny_importowe[2:80],
+  ceny_producentow = dane$ceny_producentow[2:80],
+  wzrost_pkb = dane$wzrost_pkb[1:79],
+  wzrost_kredytow = dane$wzrost_kredytow[1:79],
+  stopa_bezrobocia = dane$stopa_bezrobocia[2:80],
+  indeks_zew = dane$indeks_zew[2:80],
+  moc_produkcyjna = dane$moc_produkcyjna[1:79],
+  ropa_brent = dane$ropa_brent[2:80]
+)
+```
+
+\pagenumbering{gobble}
+
+\newpage
+
+\pagenumbering{arabic} 
+\setcounter{page}{2}
+\renewcommand{\contentsname}{Spis treści}
+\tableofcontents
+
+\newpage
+
+# Wprowadzenie
+
+Celem opracowania jest stworzenie modelu ekonometrycznego opartego na szeregach czasowych, objaśniającego kwartalną zmienność poziomu inflacji Strefy Euro w latach 2005–2024.
+
+Do budowy modelu wykorzystano wskaźniki pochodzące z platformy TradingView na podstawie danych udostępnianych przez instytucje takie jak Eurostat, Europejski Bank Centralny (ECB), ZEW oraz TVC. Obejmują one poziom inflacji, ceny ropy oraz inne istotne zmienne makroekonomiczne, które mogą mieć wpływ na wzrost lub spadek objaśnianej zmiennej. Ich opisy przedstawiono poniżej.
+
+-   *stopa_inflacji* -- stopa inflacji r/r, wyrażana jako procentowa zmiana indeksu cen towarów i usług konsumpcyjnych (CPI).
+
+-   *ceny_importowe* -- indeks cen dóbr importowanych do strefy euro.
+
+-   *ceny_producentow* -- zmiana indeksu cen producentów (PPI) r/r.
+
+-   *wzrost_pkb* -- zmiana produktu krajowego brutto (PKB) r/r.
+
+-   *wzrost_kredytow* -- tempo wzrostu kredytów udzielanych sektorowi prywatnemu r/r.
+
+-   *stopa_bezrobocia* -- udział populacji aktywnej zawodowo, która pozostaje bez pracy.
+
+-   *indeks_zew* -- indeks nastrojów ekonomicznych opracowany przez instytut ZEW, oparty na badaniach opinii analityków finansowych i ekspertów rynkowych.
+
+-   *moc_produkcyjna* -- wskaźnik wykorzystania zdolności produkcyjnych w sektorze przemysłowym, wyrażany jako procent całkowitego potencjału produkcyjnego.
+
+-   *ropa_brent* -- cena baryłki ropy Brent, wyznaczana na podstawie kursów walutowych (EUR/USD).
+
+Dla zmiennych *wzrost_pkb*, *wzrost_kredytow* oraz *moc_produkcyjna* zastosowano opóźnienie o dwa kwartały, natomiast dla pozostałych zmiennych objaśniających przyjęto opóźnienie o jeden kwartał. Takie podejście umożliwia lepsze uchwycenie zależności przyczynowo-skutkowych w analizowanej relacji i jej wpływie na poprawność budowanego modelu.
+
+\newpage
+
+# Analiza zmiennych
+
+\renewcommand{\arraystretch}{1.9}
+
+```{r tab.cap='Statystyki opisowe zmiennych'}
+df <- dane %>% 
+  select(-c(indeks)) %>%
+  describe() %>%
+  select(c(mean, median, sd, skew, kurtosis)) %>%
+  mutate(cv = sd / mean, kurtosis = kurtosis + 3)
+
+row.names(df) <- gsub("_", "$\\\\textunderscore{}$", 
+                      colnames(dane %>% select(-c(indeks))))
+
+df <- df %>%
+  mutate(mean = round(mean, 3),
+         median = round(median, 3),
+         sd = round(sd, 3), 
+         skew = round(skew, 3),
+         kurtosis = round(kurtosis, 3),
+         cv = round(cv, 3))
+
+df %>%
+  kable(format = "latex",
+         col.names = c(
+          "\\makecell{średnia}",
+          "\\makecell{mediana}",
+          "\\makecell{odchylenie \\\\ standardowe}",
+          "\\makecell{skośność}",
+          "\\makecell{kurtoza}",
+          "\\makecell{współczynnik \\\\ zmienności}"),
+        escape = FALSE) %>%
+  row_spec(0, align = "c") %>% 
+  column_spec(1, italic = TRUE) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+```{r fig.cap='Zmienna stopa_inflacji w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = stopa_inflacji)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Szereg czasowy kwartalnych stóp inflacji ukazuje wysoką zmienność cechy dla analizowanego okresu. Rozkład jest prawostronnie asymetryczny, skoncentrowany wokół niższych wartości wskaźnika, cyklicznych wahań. W latach 2021-2024 zauważalna jest zwiększona dynamika zmian (występowanie wartości odstających), w efekcie złożenia się czynników globalnych (pandemii, kryzysu surowcowego i energetycznego).
+
+\newpage
+
+```{r fig.cap='Zmienna ceny_importowe w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = ceny_importowe)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Indeks cen importowych charakteryzuje się relatywnie niską zmiennością. W latach 2005-2024 widoczne są dwa główne podokresy: względnej stabilności cen do około 2021 r. oraz dynamicznego wzrostu w ostatnich latach -- na skutek globalnych zmian, wpływających podobnie jak na stopę inflacji. Rozkład cechy jest skoncentrowany wokół niższych wartości indeksu (90-95 punktów), ze znacznymi, wysokimi wartościami odstającymi, co również potwierdzają wyznaczone statystyki.
+
+```{r fig.cap='Zmienna ceny_producentow w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = ceny_producentow)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Zmiany wartości indeksu ceny producentów (PPI) charakteryzują się największą zmiennością. Rozkład cechy jest zbliżony do trendu wahań stopy inflacji. Potwierdza to uzasadnione wykorzystanie zmiennej jako wczesnego predykatu wzrostów inflacji. Również dla tej zmiennej zauważalny jest znaczący wpływ czynników globalnych (zerwania łańcuchów dostaw, wzrostu kosztów energii).
+
+\newpage
+
+```{r fig.cap='Zmienna wzrost_pkb w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = wzrost_pkb)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Wzrost produktu krajowego brutto (PKB) charakteryzuje umiarkowane rozproszenie danych. Wysoki współczynnik kurtozy wskazuje na względną stabilność dla większości podokresów analizowanego szeregu. Z wartościami odstającymi dla lat 2021-2022, dla których zauważalny był znaczący spadek wzrostu wskaźnika, a następnie gwałtowne ożywienie gospodarki państw Strefy Euro.
+
+```{r fig.cap='Zmienna wzrost_kredytow w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = wzrost_kredytow)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+W analizowanym okresie widoczny jest stały spadek częstotliwości udzielanych kredytów sektorowi prywatnemu, aż do odwrócenia trendu w 2014 r. Dla ostatnich lat zaobserwowano ponowny, gwałtowny spadek. Wyznaczone statystyki wskazują na prawostronną asymetrię cechy -- znacząco wyższe wartości w pierwszych kilkunastu kwartałach. W przypadku tej cechy, w porównaniu do wcześniejszych, nie zaobserwowanego tak silnego powiązania ze zmiennością cechy objaśnianej. 
+
+\newpage
+
+```{r fig.cap='Zmienna stopa_bezrobocia w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = stopa_bezrobocia)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Rozkład cechy opisującej wysokość stopy bezrobocia charakteryzuje się względną symetrycznością oraz umiarkowanym spłaszczeniem (kurtoza wynosząca 1,816). Dla szeregu czasowego zauważalne są dwa główne podokresy: wzrost w latach 2008-2014, po którym następuje długotrwały trend spadkowy.
+
+```{r fig.cap='Zmienna indeks_zew w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = indeks_zew)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Indeks nastrojów ekonomicznych ZEW charakteryzuje się największymi wahaniami krótkookresowymi ze wszystkich analizowanych zmiennych, bez wyraźnego trendu długoterminowego. Rozkład cechy jest symetryczny, nie występują znaczące wartości odstające.
+
+\newpage
+
+```{r fig.cap='Zmienna moc_produkcyjna w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = moc_produkcyjna)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Dla zmiennej opisującej procentowe wykorzystanie zdolności produkcyjnych zauważalne są dwa okresy znaczącego spadku -- lata 2010 oraz 2021. W pozostałych okresach zmienna charakteryzuje się znaczną stabilnością, brakiem zmienności, o czym świadczy niska wartość współczynnika CV.
+
+```{r fig.cap='Zmienna ropa_brent w latach 2005-2024', fig.height=2.7}
+dane %>%
+  ggplot(aes(x = indeks, y = ropa_brent)) +
+  geom_line() +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank())
+```
+
+Cena baryłki ropy Brent charakteryzuje się umiarkowaną zmiennością. Zauważalna jest cykliczność wahań, ze znaczącą zmianą w latach 2021-2022, gdzie cena ropy po dynamicznym wzroście przekroczyła wartości 100 EUR/bbl (na skutek globalnego kryzysu). 
+
+\newpage
+
+```{r fig.align='center', fig.cap="Macierz korelacji"}
+ggcorrplot(cor(dane %>% select(-c(indeks))), 
+           type = "upper",
+           lab = TRUE,
+           colors = c("darkblue", "white", "darkred"),
+           legend.title = "korelacja") +
+  scale_x_discrete(position = "top") +
+  theme_void() +
+  theme(
+    axis.text.x = 
+      element_text(angle = 90, face = "italic", 
+                   hjust = 0.1, vjust = 0.5, size = 10),
+    axis.text.y = element_text(face = "italic", hjust = 0.9,
+                               vjust = 0.5, size = 10))
+```
+
+Na podstawie przedstawionej macierzy korelacji należy zauważyć, że zmienna objaśniana *stopa_inflacji* wykazuje silną dodatnią korelacje z cechą *ceny_producentów* (0,87). Podobnie dla zmiennych *ceny_importowe* (0,61) oraz *ropa_brent* (0,57). Potwierdza to istotny wpływ kosztów produkcji, importu oraz podstawowych cen surowców na kształtowanie się poziomu inflacji. Zmienna objaśniana jest umiarkowanie dodatnio skorelowana z cechą *wzrost_pkb* (0,46), w mniejszym stopnie z *wzrost_kredytow* (0,28) i *moc_produkcyjna* (0,27). Powyższe cechy wskazują, że ogólna dynamika aktywność gospodarcza może wpływać na presję inflacyjną. Dla zmiennej *stopa_bezrobocia* uzyskano ujemną korelację (-0,49), co zgodne jest z klasyczną interpretacją krzywej Phillipsa, opisującą odwrotną relację między inflacją a bezrobociem. Natomiast wielkość uzyskanego współczynnika ukazuję bardziej złożony proces kształtowania się zmiennej objaśnianej. Dla *indeks_zew* związek ze zmienną *stopa_inflacji* jest umiarkowanie ujemny (-0,42). Uzasadnia to możliwość wykorzystania tego indeksu jako wskaźnika odzwierciedlającego nastroje gospodarcze mogące wpływać na oczekiwania inflacyjne.
+
+W odniesieniu do korelacji między zmiennymi objaśniającymi, występuje silna dodatnia zależność między zmienną *moc_produkcyjna* a *wzrost_pkb* (0,68) oraz *indeks_zew* (-0,53). Zgodnie z założeniami ekonomicznymi, według których wyższemu stopniowi wykorzystania zdolności produkcyjnych towarzyszy większy wzrost PKB. W przypadku pozostałych zmiennych objaśniających poziomy ich skorelowania są mniejsze lub bliskie współczynnikom korelacji ze zmienną objaśnianą.
+
+\newpage
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i ceny_importowe', fig.height=3}
+dane %>%
+  ggplot(aes(x = ceny_importowe, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Rozproszenie punktów wskazuje na trend wzrostowy stopy inflacji przy wyższych wartościach indeksu cen importowych (zauważalne są pojedyncze obserwacje niespełniające tej zależności). Przy umiarkowanych wartościach indeksu punkty koncentrują się bliżej średniej wartości zmiennej objaśnianej, co odzwierciedla względną stabilność dla okresów bez znaczących zmian na rynkach globalnych.
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i ceny_producentow', fig.height=3}
+dane %>%
+  ggplot(aes(x = ceny_producentow, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Dla zmiany wartości indeksu cen producentów należy zauważyć bardziej stabilny kierunek zmian, niż w przypadku indeksu cen importowych. Rozmieszczanie punktów wskazuje na kluczowe znaczenie tej zmiennej w budowie modelu objaśniającego stopę inflacji.
+
+\newpage
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i wzrost_pkb', fig.height=3}
+dane %>%
+  ggplot(aes(x = wzrost_pkb, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Rozproszenie punktów wskazuje na niewielką tendencję do większej zmienności inflacji przy silniejszych wahaniach PKB. Większość obserwacji skupia się w okolicach wzrostu PKB wynoszącym 1-4% -- umiarkowane tempo rozwoju gospodarczego zazwyczaj nie prowadzi do skrajnego wzrostu stopy inflacji.
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i wzrost_kredytow', fig.height=3}
+dane %>%
+  ggplot(aes(x = wzrost_kredytow, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Rozproszenie punktów względem wzrostem tempa udzielanych kredytów a stopą inflacji nie obserwuje się klasycznej formy zależności. Dla małych wartości wskaźnika stopa inflacji pozostaje stabilna. Natomiast przy wzroście kredytów 3-5% pojawiają się punkty danych z wyraźnie wyższą stopą inflacją, osiągającą wartości bliskie ekstremalne. Dodatkowo należy zauważyć, że dla bardzo wysokich wartości zmiennej stopa inflacji wykazuje tendencję do stabilizacji.
+
+\newpage
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i stopa_bezrobocia', fig.height=3}
+dane %>%
+  ggplot(aes(x = stopa_bezrobocia, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Zauważalna jest ogólna tendencja odwrotnie proporcjonalna, zgodna z intuicją teorii krzywej Phillipsa -- przy niższych poziomach stopy bezrobocia inflacja osiąga wyższe wartości. W miarę wzrostu bezrobocia obserwuje się stopniową stabilizację zmiennej objaśnianej.
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i indeks_zew', fig.height=3}
+dane %>%
+  ggplot(aes(x = indeks_zew, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Nie występuje jednoznaczna zależność pomiędzy poziomem indeksu ZEW a stopą inflacji, co sugeruje, że zarówno sama wartość wskaźnika, jak i procesy wpływające na jego kształtowanie, mają złożony charakter. Zarówno przy pozytywnych, jak i negatywnych ocenach sytuacji rynkowej obserwowane są podwyższone odczyty inflacji. Warto jednak zauważyć, że dla większości dodatnich wartości indeksu inflacja utrzymuje się na względnie stabilnym poziomie, nieprzekraczającym 4%.
+
+\newpage
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i moc_produkcyjna', fig.height=3}
+dane %>%
+  ggplot(aes(x = moc_produkcyjna, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Między mocą produkcyjną a stopą inflacji zauważalna jest złożona zależność: dla niższych poziomów wskaźnika wartość zmiennej objaśnianej jest stosunkowo niska, natomiast przy wyższych poziomach (powyżej 80%) obserwuje się większe zróżnicowanie przyjmowanych wartość (w tym wartości ekstremalne) przez zmienną opisującą stopę inflacji.
+
+```{r fig.cap='Zależność pomiędzy stopa_inflacji i ropa_brent', fig.height=3}
+dane %>%
+  ggplot(aes(x = ropa_brent, y = stopa_inflacji)) +
+  geom_point() +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Dla cen ropy do około 60 EUR/bbl stopa inflacji pozostaje względnie stabilna, a rozrzut obserwacji jest ograniczony. Wraz ze wzrostem cen surowca widoczna jest tendencja do osiągania przez inflację wyższych wartości. Występują również obserwacje niespełniające tej zależności, co wskazuje na złożony charakter oddziaływania cen ropy na poziom inflacji. Przy ekstremalnie wysokich wartościach przekraczających 90 EUR/bbl, zmienna objaśniana również przybiera skrajne poziomy, potwierdzając silniejszy, nieregularny związek z ceną surowca.
+
+```{r}
+dane <- dane %>% select(-c(moc_produkcyjna))
+```
+
+\newpage
+
+# Przygotowanie danych
+
+Ze względu na niską zmienność zmiennej *moc_produkcyjna* (CV < 5 %) oraz wyraźnie wyższy poziom skorelowania z cechą *wzrost_pkb* niż z samą zmienną objaśnianą, zdecydowano się na jej wykluczenie z dalszego etapu budowy modelu. Dodatkowo, decyzję tę wzmacnia charakter wykresu rozrzutu, który nie wskazuje na jednoznaczną zależność.
+
+Do badanie stacjonarności szeregu czasowego wykorzystano test ADF (augmented Dickey-Fuller test), dla którego przyjmuje się następujące hipotezy:
+
+$$
+\begin{aligned}
+&H_0: \text{szereg czasowy jest niestacjonarny} \\
+&H_1: \text{szereg czasowy jest stacjonarny}
+\end{aligned}
+$$ 
+
+Dodatkowo wykorzystano test KPSS (Kwiatkowski-Phillips-Schmidt-Shin test), dla którego przyjmuje się hipotezy w odwrotnym układzie:
+
+$$
+\begin{aligned}
+&H_0: \text{szereg czasowy jest stacjonarny} \\
+&H_1: \text{szereg czasowy jest niestacjonarny}
+\end{aligned}
+$$ 
+
+W poniższej tabeli przedstawiono uzyskane p-value testów oraz wniosek dotyczący stacjonarności analizowanych zmiennych.
+
+```{r tab.cap="Wyniki testów ADF i KPSS"}
+df <- data.frame(
+  adf = c(adf.test(dane$stopa_inflacji)$p.value, # nstac !!!
+          adf.test(dane$ceny_importowe)$p.value, # nstac !!!
+          adf.test(dane$ceny_producentow)$p.value, # nstac !!!
+          adf.test(dane$wzrost_pkb)$p.value, # stac
+          adf.test(dane$wzrost_kredytow)$p.value, # nstac !!!
+          adf.test(dane$stopa_bezrobocia)$p.value, # nstac !!!
+          adf.test(dane$indeks_zew)$p.value, # stac
+          adf.test(dane$ropa_brent)$p.value # nstac !!!
+          ),
+  kpss = c(kpss.test(dane$stopa_inflacji)$p.value, # stac
+           kpss.test(dane$ceny_importowe)$p.value, # nstac !!!
+           kpss.test(dane$ceny_producentow)$p.value, # stac
+           kpss.test(dane$wzrost_pkb)$p.value, # stac
+           kpss.test(dane$wzrost_kredytow)$p.value, # nstac !!!
+           kpss.test(dane$stopa_bezrobocia)$p.value, # nstac !!!
+           kpss.test(dane$indeks_zew)$p.value, # stac
+           kpss.test(dane$ropa_brent)$p.value # stac
+  ))
+
+df <- df %>%
+  mutate(wniosek_adf = ifelse(adf < 0.05, "stacjonarność", "\\textbf{niestacjonarność}"),
+         wniosek_kpss = ifelse(kpss < 0.05, "\\textbf{niestacjonarność}", "stacjonarność")) %>%
+  select(adf, wniosek_adf, kpss, wniosek_kpss)
+
+row.names(df) <- gsub("_", "$\\\\textunderscore{}$", 
+                      colnames(dane %>% select(-c(indeks))))
+
+df %>%
+  kable(format = "latex",
+         col.names = c(
+          "\\makecell{ADF}",
+          "\\makecell{wniosek}",
+          "\\makecell{KPSS}",
+          "\\makecell{wniosek}"),
+        escape = FALSE, digits = 3) %>%
+  row_spec(0, align = "c") %>% 
+  column_spec(1, italic = TRUE) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+```{r results='hide'}
+diff_ceny_importowe <- diff(dane$ceny_importowe)
+adf.test(diff_ceny_importowe) # stac
+kpss.test(diff_ceny_importowe) # stac
+dane$ceny_importowe <- c(NA, diff_ceny_importowe)
+
+diff_wzrost_kredytow <- diff(dane$wzrost_kredytow)
+adf.test(diff_wzrost_kredytow) # nstac !!!
+kpss.test(diff_wzrost_kredytow) # stac
+dane$wzrost_kredytow <- c(NA, diff_wzrost_kredytow)
+
+diff_stopa_bezrobocia <- diff(dane$stopa_bezrobocia)
+adf.test(diff_stopa_bezrobocia) # stac
+kpss.test(diff_stopa_bezrobocia) # stac
+dane$stopa_bezrobocia <- c(NA, diff_stopa_bezrobocia)
+
+diff_ropa_brent <- diff(dane$ropa_brent)
+adf.test(diff_ropa_brent) # stac
+kpss.test(diff_ropa_brent) # stac
+dane$ropa_brent <- c(NA, diff_ropa_brent)
+
+dane <- dane[2:79,]
+```
+
+Dla zmiennej *stopa_inflacji* nie przeprowadzono różnicowania, aby nie zaburzyć jej interpretacji ekonomicznej. Podobne podejście zastosowano wobec zmiennej *ceny_producentow*, która z definicji odzwierciedla zmiany wartości. Dodatkowo, w przypadku obu tych cech test KPSS wskazał na stacjonarność. W odniesieniu do pozostałych zmiennych -- *ceny_importowe, wzrost_kredytow, stopa_bezrobocia* oraz *ropa_brent* -- dla których zarówno test ADF, jak i KPSS potwierdziły niestacjonarność, zastosowano różnicowanie. Jednokrotne wykorzystanie przekształcenia okazało się wystarczające do uzyskania stacjonarności prawie we wszystkich przypadkach. Jedynie dla cechy *wzrost_kredytow* dla testu ADF uzyskano p-value wynoszące `r round(adf.test(diff_wzrost_kredytow)$p.value, 3)` (niestacjonarność).
+
+W analizie pominięto usuwanie (zastępowanie) wartości odstających, ponieważ mogły one odzwierciedlać istotne zjawiska gospodarcze. Dodatkowo, w przypadku większości zmiennych okresy występowania wartości odstających pokrywają się z kwartałami, w których obserwowano skrajne poziomy stopy inflacji.
+
+```{r include=FALSE}
+boxplot(dane$stopa_inflacji)
+boxplot(dane$ceny_importowe)
+boxplot(dane$ceny_producentow)
+boxplot(dane$wzrost_pkb)
+boxplot(dane$wzrost_kredytow)
+boxplot(dane$stopa_bezrobocia)
+boxplot(dane$indeks_zew)
+boxplot(dane$ropa_brent)
+```
+
+\newpage
+
+# Dobór zmiennych i budowa modelu
+
+```{r}
+dane_treningowe <- dane[1:62,]
+dane_testowe <- dane[63:78,]
+```
+
+W wyniku wcześniejszych przekształceń uzyskano szeregi czasowe obejmujące okres od III kwartału 2005 roku do IV kwartału 2024 roku. Dane zostały następnie podzielone na zbiór treningowy oraz testowy, przy czym zbiór testowy obejmował obserwacje od I kwartału 2021 roku, co odpowiada ok. 20% całkowitej liczebności próby.
+
+```{r results='hide'}
+model0 <- lm(stopa_inflacji ~., dane_treningowe %>% select(-c(indeks)))
+model <- step(model0, direction = "backward")
+```
+
+W celu wyboru optymalnego zestawu zmiennych objaśniających zastosowano metodę krokową wsteczną z wykorzystaniem kryterium informacyjnego AIC. Podejście to polega na iteracyjnym usuwaniu zmiennych, w celu minimalizacji AIC. Najmniejszą wartość kryterium wynoszącą `r round(AIC(model), 2)`, uzyskano w wyniku wykluczenia cechy *wzrost_pkb*, co doprowadziło do wyboru poniższej kombinacji:
+
+$$\{\textit{ceny\_importowe, ceny\_producentow, wzrost\_kredytow, stopa\_bezrobocia, indeks\_zew, ropa\_brent}\}$$
+
+```{r results='hide'}
+Hellwig <- hellwig(dane_treningowe$stopa_inflacji,
+                   dane_treningowe %>%
+                     select(-c(indeks, stopa_inflacji)))
+Hellwig$k[which.max(Hellwig$h)]
+```
+
+Wykorzystanie metody krokowej wstecznej wynikało z jej mniejszej rygorystyczności wobec współliniowości między zmiennymi. W analizie inflacji, gdzie tego typu zależności są trudne do uniknięcia, metoda Hellwiga okazała się zbyt restrykcyjna. W przypadku jej zastosowania, najlepsze kombinacje zmiennych objaśniających uzyskano dla *ceny_producentow* i *ropa_brent*, osiągając pojemność informacyjną H = `r round(Hellwig$h[which.max(Hellwig$h)], 3)`. Dla wybranego zbioru danych wartość ta wyniosła H = `r round(Hellwig$h[Hellwig$k == "1-2-4-5-6-7"], 3)`.
+
+```{r}
+dane_treningowe <- dane_treningowe %>%
+  select(indeks,
+         stopa_inflacji,
+         ceny_importowe,
+         ceny_producentow,
+         wzrost_kredytow,
+         stopa_bezrobocia,
+         indeks_zew,
+         ropa_brent)
+```
+
+Dla wybranego zbioru zmiennych objaśniających dokonano estymacji parametrów metodą MNK. Na obecnym etapie zrezygnowano z interpretacji uzyskanego modelu, ponieważ weryfikacja spełnienia założeń MNK nie została jeszcze przeprowadzona.
+
+\newpage
+
+# Weryfikacja poprawności modelu
+
+## Badanie normalności rozkładu reszt
+
+Do zbadania normalności rozkładu reszt wykorzystano testy Shapiro-Wilka oraz Lillieforsa, dla których przyjmuje się poniższe hipotezy:
+
+$$
+\begin{aligned}
+&H_0: \text{składnik losowy jest określony rozkładem normalnym} \\
+&H_1: \text{składnik losowy nie jest określony rozkładem normalnym}
+\end{aligned}
+$$
+
+```{r fig.cap="Gęstość rozkładu reszt modelu", fig.height=3}
+ggplot() +
+  geom_density(aes(x = model$residuals)) + 
+  labs(x = "reszty modelu", y = "gęstość") +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Dla testu Shapiro-Wilka otrzymano statystykę W = `r round(shapiro.test(model$residuals)$statistic, 3)` (p-value = `r round(shapiro.test(model$residuals)$p.value, 3)`), dla testu Lillieforsa D = `r round(lillie.test(model$residuals)$statistic, 3)` (p-value = `r round(lillie.test(model$residuals)$p.value, 3)`). Nie ma podstaw do odrzucenia hipotezy zerowej -- składnik losowy jest określony rozkładem normalnym. Uzyskane rezultaty umożliwiają prawidłową interpretację testów istotności parametrów modelu i jego ogólną ocenę.
+
+## Testowanie autokorelacji
+
+Wykorzystanie testu Ljung-Boxa do weryfikacji, czy składniki losowe utworzonego modelu pochodzą z autokorelacji określonego rzędu. Dodatkowo należy uwzględnić, że test sprawdza istotność grupy autokorelacji. Przyjmuje się hipotezy:
+
+$$
+\begin{aligned}
+H_0 &: \rho_1 = \rho_2 = \dots = \rho_p = 0 \\
+H_1 &: \;\sim H_0 
+\end{aligned}
+$$ 
+
+\newpage
+
+```{r fig.cap="Korelogram reszt modelu", fig.height=3}
+ggAcf(model$residuals) +
+  labs(x = "opóźnienie", y = "autokorelacja") +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"),
+        plot.title = element_blank())
+```
+
+```{r}
+rho <- acf(model$residuals, plot = FALSE)$acf[2]
+```
+
+Analizując korelogram ACF reszt modelu należy zauważyć istotność skorelowania składników losowych dla opóźnień rzędów pierwszego, czwartego oraz piątego (niebieska linia oznacza wartość krytyczną). W przypadku testu Ljung-Boxa dla opóźnienia pierwszego rzędu otrzymano wartość statystyki `r round(Box.test(model$residuals, lag = 1, type = "Ljung")$statistic, 3)` (p-value = `r formatC(Box.test(model$residuals, lag = 1, type = "Ljung")$p.value, format = "e", digits = 1)`). Należy zatem odrzucić hipotezę zerową, składniki losowe modelu pochodzą z autokorelacji rzędu pierwszego ($\hat{\rho}_1$ = `r round(rho, 3)`).
+
+```{r}
+dane_treningowe <- dane_treningowe %>%
+  mutate(
+    stopa_inflacji = stopa_inflacji - rho * lag(stopa_inflacji),
+    ceny_importowe = ceny_importowe - rho * lag(ceny_importowe),
+    ceny_producentow = ceny_producentow - rho * lag(ceny_producentow),
+    wzrost_kredytow = wzrost_kredytow - rho * lag(wzrost_kredytow),
+    stopa_bezrobocia =  stopa_bezrobocia - rho * lag(stopa_bezrobocia),
+    indeks_zew = indeks_zew - rho * lag(indeks_zew),
+    ropa_brent = ropa_brent - rho * lag(ropa_brent)
+  ) %>%
+  slice(-1)
+```
+
+W celu usunięcia autokorelacji rzędu pierwszego przekształcono wartości zmiennych zgodnie z metodą Cochrane'a-Orcutta. Poniżej przedstawiono korelogram reszt dla nowego modelu.
+
+```{r}
+model2 <- lm(stopa_inflacji ~ ., dane_treningowe %>% select(-c(indeks)))
+```
+
+```{r fig.cap="Korelogram reszt modelu z przekształceniami", fig.height=3}
+ggAcf(model2$residuals) +
+  labs(x = "opóźnienie", y = "autokorelacja") +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"),
+        plot.title = element_blank())
+```
+
+```{r results='hide'}
+Box.test(model2$residuals, lag = 1, type = "Ljung")
+Box.test(model2$residuals, lag = 2, type = "Ljung")
+Box.test(model2$residuals, lag = 3, type = "Ljung")
+Box.test(model2$residuals, lag = 4, type = "Ljung")
+```
+
+\newpage
+
+Zastosowane przekształcenie zmiennych umożliwiło wyeliminowanie autokorelacji pierwszego rzędu, w teście Ljung-Boxa otrzymano statystykę wynoszącą `r round(Box.test(model2$residuals, lag = 1, type = "Ljung")$statistic, 3)` (p-value = `r round(Box.test(model2$residuals, lag = 1, type = "Ljung")$p.value, 3)`). Na korelogramie widoczna jest względnie wysoka wartość współczynnika autokorelacji rzędu czwartego ($\hat{\rho}_4$ = `r round(acf(model2$residuals, plot = FALSE)$acf[5], 3)`), jednak wykorzystany test nie wykazał jej istotności (dla poprawności wniosków zweryfikowano brak autokorelacji rzędów 2 i 3). Dla nowego modelu ponownie zbadano normalność rozkładu składnika losowego, uzyskane w testach wartości statystyk potwierdziły zgodność z założeniami.
+
+```{r results='hide'}
+shapiro.test(model2$residuals) 
+lillie.test(model2$residuals)
+```
+
+## Badanie heteroskedastyczności
+
+W celu zbadania prawdziwości spełnienia założenie o homoskedastyczności składnika losowego wykorzystano test Goldfelda-Quandta, dla którego przyjmuje się hipotezy o równości wariancji podzielonej próby:
+
+$$
+\begin{aligned}
+H_0 &: \sigma^2_1 = \sigma^2_2 \\
+H_1 &: \sigma^2_1 \neq \sigma^2_2 
+\end{aligned}
+$$
+
+W tabeli przedstawiono wyniki testu (p-value) oraz wniosek dotyczący wystąpienia heteroskedastyczność składnika losowego względem danej zmiennej objaśniającej.
+
+```{r tab.cap="Wyniki testu Goldfelda-Quandta"}
+df <- data.frame(
+  gq = c(gqtest(
+      model2, alternative = "two.sided", 
+      order.by = ~ dane_treningowe$ceny_importowe)$p.value, # homosked
+    gqtest(
+      model2, alternative = "two.sided", 
+      order.by = ~ dane_treningowe$ceny_producentow)$p.value, # homosked
+    gqtest(
+      model2, alternative = "two.sided", 
+      order.by = ~ dane_treningowe$wzrost_kredytow)$p.value, # homosked
+    gqtest(
+      model2, alternative = "two.sided", 
+      order.by = ~ dane_treningowe$stopa_bezrobocia)$p.value, # pv = 0.045 !!!
+    gqtest(
+      model2, alternative = "two.sided", 
+      order.by = ~ dane_treningowe$indeks_zew)$p.value, # homosked
+    gqtest(
+      model2, alternative = "two.sided", 
+      order.by = ~ dane_treningowe$ropa_brent)$p.value # homosked
+  )
+)
+
+df <- df %>%
+  mutate(wniosek_gq = ifelse(gq < 0.05, "\\textbf{heteroskedastyczność}", "homoskedastyczność")) %>% 
+  select(gq, wniosek_gq)
+
+row.names(df) <- gsub("_", "$\\\\textunderscore{}$", 
+                      colnames(dane_treningowe %>% 
+                                 select(-c(indeks, stopa_inflacji))))
+
+df %>%
+  kable(format = "latex",
+         col.names = c(
+          "\\makecell{Goldfeld-Quandt}",
+          "\\makecell{Wniosek}"),
+        escape = FALSE, digits = 3) %>%
+  row_spec(0, align = "c") %>% 
+  column_spec(1, italic = TRUE) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+Dodatkowo przeprowadzono test Breuscha-Pagana, który stanowi uogólnienie wcześniej opisanego testu (analogiczne hipotezy). Otrzymano wartość statystyki BP = `r round(bptest(model2)$statistic, 3)` (p-value = `r round(bptest(model2)$p.value, 3)`), oznaczającą brak podstaw do odrzucenia hipotezy zerowej, homoskedastyczność składnika losowego.
+
+W przypadku testu Goldfelda-Quandta dla zmiennej *stopa_bezrobocia* uzyskano p-value nieznacznie mniejsze od przyjętego poziomu istotności 5%. Podjęto próbę wyeliminowania heteroskedastyczności ze względu na tę zmienną z wykorzystaniem WMNK. Jednak zastosowane metody wyznaczania wag nie przyniosły poprawy wyników testu heteroskedastyczności lub skutkowały naruszeniem innych założeń modelu. Z uwagi na niewielką skalę niejednorodności wariancji oraz brak poprawy po transformacji, przyjęto, że model nie zawiera istotnej heteroskedastyczności związanej z którąkolwiek ze zmiennych objaśniających.
+
+```{r results='hide'}
+model_res <- lm(log(model2$residuals^2) ~
+                dane_treningowe$ceny_importowe +
+                dane_treningowe$ceny_producentow +
+                dane_treningowe$wzrost_kredytow +
+                dane_treningowe$stopa_bezrobocia +
+                dane_treningowe$indeks_zew +
+                dane_treningowe$ropa_brent)
+w <- sqrt(exp(model_res$fitted.values))
+w <- sqrt(model2$residuals^2)
+model3 <- lm(stopa_inflacji ~., dane_treningowe %>% select(-c(indeks)),
+             weights = 1 / w^2)
+summary(model3)
+model3_res <- (1 / w) * model3$residuals
+ncvTest(model3, var.formula = . ~ 
+          ceny_importowe + 
+          ceny_producentow +
+          wzrost_kredytow +
+          stopa_bezrobocia +
+          indeks_zew +
+          ropa_brent)
+
+lillie.test(model3_res)
+shapiro.test(model3_res)
+# pierwsze przekształcenie nie pomogło usunąć heteroskedastyczności
+# drugie zaburzyło założenie normalności składnika losowego, vif > 30
+```
+
+\newpage
+
+## Testowanie współliniowości
+
+W badaniu występowania współliniowości między zmiennymi objaśniającymi wykorzystano współczynnik VIF (Variance Inflation Factor). Wyniki przedstawiono w tabeli poniżej.
+
+```{r tab.cap="Wartości współczynnika VIF"}
+df <- data.frame(vif(model2))
+df <- as.data.frame(t(df))
+colnames(df) <- gsub("_", "$\\\\textunderscore{}$", 
+                      colnames(dane_treningowe %>% 
+                                 select(-c(indeks, stopa_inflacji))))
+row.names(df) <- c("VIF")
+
+df %>%
+  kable(format = "latex",
+        escape = FALSE, digits = 3) %>%
+  row_spec(0, align = "c", italic = TRUE) %>% 
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+Wartości współczynników VIF dla wszystkich zmiennych objaśniających są mniejsze niż 2, co wskazuje na brak istotnej współliniowości. Nieznaczna współzależność pomiędzy cechami pozwala na ich dalsze wykorzystanie w budowanym modelu ekonometrycznym.
+
+## Testowanie stabilności parametrów modelu
+
+W badaniu stabilności parametrów modelu wykorzystano test Chowa, dla którego przyjmuje się następujące hipotezy:
+
+$$
+\begin{aligned}
+H_0 &: \text{parametry modelu są stabilne} \\
+H_1 &: \text{parametry modelu nie są stabilne} 
+\end{aligned}
+$$ Wyniki wykorzystanego testu przedstawiono na wykresie w zależności od punktu podziału zbioru obserwacji.
+
+```{r fig.cap="Wyniki testu Chowa w zależności od punktu podziału", fig.height=2.7}
+RSK <- sum(model2$residuals^2)
+k <- ncol(dane_treningowe %>% select(-c(indeks, stopa_inflacji)))
+n <- nrow(dane_treningowe)
+r_1 <- k + 1
+r_2 <- n - 2 * (k + 1)
+chow_wyniki <- c()
+for (i in 10:52) {
+  dane_chow_1 <- dane_treningowe[1:i, ]
+  dane_chow_2 <- dane_treningowe[(i + 1):n, ]
+  
+  model_chow_1 <- lm(dane_chow_1$stopa_inflacji ~.,
+                     dane_chow_1 %>% select(-c(indeks, stopa_inflacji)))
+  model_chow_2 <- lm(dane_chow_2$stopa_inflacji ~.,
+                     dane_chow_2 %>% select(-c(indeks, stopa_inflacji)))
+  
+  RSK_1 <- sum(model_chow_1$residuals^2)
+  RSK_2 <- sum(model_chow_2$residuals^2)
+  
+  F_statistic <- ((RSK - (RSK_1 + RSK_2)) / (RSK_1 + RSK_2)) * 
+    ((n - 2 * (k + 1)) / (k + 1))
+  p = 1 - pf(F_statistic, r_1, r_2)
+  chow_wyniki <- c(chow_wyniki, p)
+}
+
+df <- data.frame(x = 10:52, y = chow_wyniki)
+
+df %>%
+  ggplot(aes(x = x, y = y)) +
+  geom_line() +
+  labs(x = "punkt podziału", y = "p-value") +
+  scale_x_continuous(limits = c(0, 61)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "blue") +
+  theme_linedraw() +
+  theme(axis.title = element_text(face = "italic"))
+```
+
+Analiza wykresu p-value testu Chowa wskazuje, że dla większości potencjalnych punktów podziału nie ma podstaw do odrzucenia hipotezy zerowej -- parametry modelu pozostają stabilne. Jedynie w okolicach podziału względem 30 obserwacji uzyskano wartość mniejszą od przyjętego poziomu istotności 5% (p-value = `r round(min(chow_wyniki), 3)`). Uwzględniając lokalny charakter tej obserwacji oraz umiarkowaną istotność statystyczną, zdecydowano się na pozostawienie modelu w niezmienionej postaci, uznając parametry za stabilne w całym okresie analizy.
+
+\newpage
+
+## Testowanie stabilności postaci analitycznej modelu
+
+W badaniu stabilności postaci analitycznej modelu wykorzystano test Ramsey'a dla którego przyjmuje się następujące hipotezy:
+
+$$
+\begin{aligned}
+H_0 &: \text{wybór postaci analitycznej modelu jest prawidłowy} \\
+H_1 &: \text{wybór postaci analitycznej modelu nie jest prawidłowy} 
+\end{aligned}
+$$ Dla modelu uzyskano wartość statystyki równą `r round(resettest(model2)$statistic, 3)` (p-value = `r round(resettest(model2)$p.value, 3)`), a zatem nie ma podstaw do odrzucenia hipotezy zerowej, wybór postaci analitycznej modelu (model ściśle liniowy) jest prawidłowy.
+
+Przeprowadzono również test liczby serii, który w kontekście analizowanego modelu służy weryfikacji losowości reszt i dostarcza zbliżonej informacji co test Ramsey'a, przyjmuje się hipotezy:
+
+$$
+\begin{aligned}
+H_0 &: \text{reszty są losowe (model jest liniowy)} \\
+H_1 &: \text{reszty nie są losowe (model nie jest liniowy)} 
+\end{aligned}
+$$ Dla testu liczby serii uzyskano wartość statystyki `r round(runs.test(factor(model2$residuals > 0))$statistic, 3)` (p-value = `r round(runs.test(factor(model2$residuals > 0))$p.value, 3)`). Wynik testu potwierdza poprawność postaci analitycznej modelu.
+
+## Badanie efektu katalizy
+
+```{r results='hide'}
+corr_matrix <- cor(dane_treningowe %>% select(-c(indeks)))
+R0 <- corr_matrix[2:7, 1]
+R <- corr_matrix[2:7, 2:7]
+
+R0[3] <- -R0[3]
+R[,3] <- -R[,3]
+R[3,] <- -R[3,]
+R0[4] <- -R0[4]
+R[,4] <- -R[,4]
+R[4,] <- -R[4,]
+R0[5] <- -R0[5]
+R[,5] <- -R[,5]
+R[5,] <- -R[5,]
+
+R0 <- c(R0[3], R0[4], R0[6], R0[1], R0[5], R0[2])
+R <- R[,c(3, 4, 6, 1, 5, 2)]
+R <- R[c(3, 4, 6, 1, 5, 2),]
+
+katalizator <- c()
+
+for (i in 1:6) {
+  for (j in 1:6) {
+    if (i < j) {
+      k <- R[i,j] < 0 | R[i,j] > (R0[i] / R0[j])
+      if (k) {
+        katalizator <- c(katalizator, paste(i, "-", j))
+      }
+    }
+  }
+}
+
+katalizator
+```
+
+Dla kombinacji zmiennych wykorzystanych do budowy modelu występują katalizatory: *wzrost_kredytow* jest katalizatorem w parze ze zmiennymi *stopa_bezrobocia*, *ceny_importowe* oraz *ceny_producentow*; *stopa_bezrobocia* w parze z *ropa_brent*; *ropa_brent* w parze z *indeks_zew*; *ceny_importowe* w parze z *indeks_zew*.
+
+```{r}
+nek <- summary(model2)$r.squared - Hellwig$h[Hellwig$k == "1-2-4-5-6-7"]
+wnek <- nek / summary(model2)$r.squared * 100 
+```
+
+Efekt katalizy o natężeniu `r round(nek, 3)` (względnie `r round(wnek, 1)`%) uznano za akceptowalny (podjęto próbę zmiany kombinacji zmiennych), ponieważ model spełnia wszystkie inne założenia poprawności, w tym brak istotnej współliniowości (VIF < 2). Stosunkowo wysokie natężenie efektu katalizy wynika z charakterystyki danych makroekonomicznych, które często wykazują silne współzależności. Inflacja jako zmienna objaśniana podlega wpływom wielu powiązanych czynników makroekonomicznych, co sprzyja występowaniu relacji pośrednich, niełatwych do całkowitego wyeliminowania bez pogorszenia trafności modelu.
+
+## Badanie koincydencji
+
+```{r tab.cap="Znaki estymatorów parametrów i współczynników korelacji"}
+df <- data.frame(as.vector(model2$coefficients[-1]), 
+                 as.vector(cor(dane_treningowe$stopa_inflacji,
+                     dane_treningowe %>% 
+                                 select(-c(indeks, stopa_inflacji)))))
+df <- as.data.frame(t(df))
+colnames(df) <- gsub("_", "$\\\\textunderscore{}$", 
+                      colnames(dane_treningowe %>% 
+                                 select(-c(indeks, stopa_inflacji))))
+row.names(df) <- c("estymator", "korelacja")
+
+df %>%
+  kable(format = "latex",
+        escape = FALSE, digits = 3) %>%
+  row_spec(0, align = "c", italic = TRUE) %>% 
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+Znaki estymowanych parametrów i współczynniki korelacji liniowej są zgodne, model jest koincydencyjny.
+
+\newpage
+
+# Prezentacja modelu
+
+```{r tab.cap="Podsumowanie modelu"}
+df = data.frame(
+  summary(model2)$coefficients[,"Estimate"],
+  summary(model2)$coefficients[,"Std. Error"],
+  summary(model2)$coefficients[,"t value"],
+  summary(model2)$coefficients[,"Pr(>|t|)"]
+)
+row.names(df) <- c("wyraz wolny", 
+                   gsub("_", "$\\\\textunderscore{}$",
+                        colnames(dane_treningowe %>% 
+                                  select(-c(indeks, stopa_inflacji)))))
+
+df[1,1] <- df[1,1] / (1 - rho)
+df[1,2] <- df[1,2] / (1 - rho)
+
+df[,1] <- formatC(df[,1], format = "f", digits = 3)
+df[,2] <- formatC(df[,2], format = "f", digits = 3)
+df[,3] <- formatC(df[,3], format = "f", digits = 3)
+df[,4] <- ifelse(df[,4] < 0.01,
+                 formatC(df[,4], format = "e", digits = 1),
+                 formatC(df[,4], format = "f", digits = 3))
+
+df %>%
+  kable(format = "latex",
+        col.names = c(
+          "\\makecell{estymator}",
+          "\\makecell{SE estymatora}",
+          "\\makecell{t-Student}",
+          "\\makecell{p-value}"),
+        escape = FALSE, digits = 4) %>%
+  row_spec(0, align = "c") %>% 
+  column_spec(1, italic = TRUE) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+
+r2 <- summary(model2)$r.squared
+fstat <- summary(model)$fstatistic
+pval_f <- pf(fstat[1], fstat[2], fstat[3], lower.tail = FALSE)
+```
+
+Weryfikacja istotności parametrów z wykorzystaniem testu Walda, dla którego przyjmuje się hipotezy:
+
+$$
+\begin{aligned}
+&H_0 : \alpha_1  = \ldots = \alpha_k = 0 \text{ (wszystkie zmienne nieistotne)}\\
+&H_1 : \;\sim H_0 \text{ (co najmniej jedna ze zmiennych istotna)}
+\end{aligned}
+$$
+Uzyskano wartość statystyki F-Snedecora wynoszącą `r round(fstat[1], 3)` (p-value = `r formatC(pval_f, format = "e", digits = 2)` < 0,05). Należy zatem odrzucić hipotezę zerową, co najmniej jeden z parametrów modelu jest istotnie różny od zera (zmienna objaśniana dla tego parametru jest istotna). Uzyskany wynik potwierdzają rezultaty testów istotność pojedynczej zmiennej, test t-Studenta, dla którego przyjmuje się hipotezy:
+
+$$
+\begin{aligned}
+&H_0 : \alpha_j = 0 \text{ (zmienna nieistotna)}\\
+&H_1 : \alpha_j \neq 0 \text{ (zmienna istotna)}
+\end{aligned}
+$$
+Dla przyjętego poziomu istotności 5% należy odrzucić hipotezę zerową dla zmiennych: *ceny_producentow*, *wzrost_kredytow*, *stopa_bezrobocia* oraz wyrazu wolnego. W przypadku przyjęcia 10% również cechy: *indeks_zew*, *ropa_brent* -- zmienne modelu są istotnie różne od zera. Cecha *ceny_importowe* nie jest statystycznie istotna.
+
+Współczynnik determinacji modelu R\textsuperscript{2} = `r round(r2, 3)` -- model wyjaśnia około `r round(r2, 3) * 100`% zmienność stopy inflacji. Należy jednak pamiętać, że wartość współczynnika może być częściowo zawyżona na skutek wystąpienia efektu katalizy.
+
+Wartość estymatora wyrazu wolnego oraz jego błąd standardowy zostały odpowiednio przekształcone, po wcześniejszym zastosowaniu metody Cochrane’a-Orcutta, tak aby odpowiadały wartościom wyrażonym w oryginalnej postaci. Nie podjęto próby interpretacji parametru ze względu na brak ekonomicznego uzasadnienia jego wartości w kontekście objaśniania inflacji. Podobnie w przypadku wartości parametru dla zmiennej *ceny_importowe* ze względu na nieistotność w modelu.
+
+\newpage
+
+Interpretacje istotnych parametrów modelu:
+
+  - *ceny_producentow* -- jeżeli wartość indeksu cen producentów (r/r) wzrośnie o 1 punkt procentowy w okresie poprzednim t-1, to stopa inflacji (r/r) w bieżącym okresie t wzrośnie przeciętnie o 0,181 punktu procentowego (ceteris paribus).
+  
+  - *wzrost_kredytow* -- jeżeli różnica tempa udzielanych kredytów sektorowi prywatnemu (r/r) między okresami t-3 i t-2 wzrośnie o 1 punktu procentowy, to stopa inflacji (r/r) w bieżącym okresie t zmaleje przeciętnie o 0,620 punktu procentowego (ceteris paribus).
+  
+  - *stopa_bezrobocia* -- jeżeli różnica wielkość stopy bezrobocia między okresami t-1 i t-2 wzrośnie o 1 punkt procentowy, to stopa inflacji (r/r) w bieżącym okresie t zmaleje przeciętnie o 0,668 punktu procentowego (ceteris paribus). 
+  
+  - *indeks_zew* -- jeżeli wartość indeksu nastrojów ekonomicznych ZEW wzrośnie o 1 punkt w okresie poprzednim t-1, to stopa inflacji (r/r) w bieżącym okresie t zmaleje przeciętnie o 0,005 punktu procentowego (ceteris paribus). 
+  
+  - *ropa_brent* -- jeżeli różnica ceny ropy Brent między okresami t-1 i t-2 wzrośnie o 1 EUR/bbl, to stopa inflacji (r/r) w bieżącym okresie t wzrośnie przeciętnie o 0,011 punktu procentowego (ceteris paribus).
+
+Wyniki przedstawione w modelu są zgodne z teorią ekonomiczną oraz obserwacjami rzeczywistych zjawisk gospodarczych. Wzrost cen producentów oraz cen ropy wpływa na wzrost inflacji, co wynika z faktu, że wyższe koszty produkcji są przenoszone na konsumentów. Spadek wielkości stopy inflacji przy wzroście bezrobocia jest zgodny z teorią Phillipsa, która zakłada odwrotną zależność między inflacją a bezrobociem. Spadek inflacji przy wzroście tempa kredytowania sektora prywatnego może wskazywać na to, że kredyty udzielane są w warunkach stabilnej gospodarki, gdzie rosnąca podaż kapitału wspiera inwestycje bez generowania presji cenowej. Spadek inflacji przy wyższych wartościach indeksu ZEW może świadczyć o pozytywnych oczekiwaniach co do przyszłej kondycji gospodarki, ograniczając niepewność rynków i stabilizuje ceny.
+
+\newpage
+
+# Prognoza ex-post
+
+```{r fig.cap="Prognoza na lata 2021-2024", fig.height=4}
+prognoza <- predict(model2, newdata = dane_testowe) - 
+  model2$coefficients[1] + model2$coefficients[1] / (1 - rho)
+
+MAPE <- mean(abs((dane_testowe$stopa_inflacji - prognoza) / 
+                   dane_testowe$stopa_inflacji) * 100)
+
+df <- data.frame(indeks = dane_testowe$indeks, 
+                 prognoza = prognoza, 
+                 rzeczywista = dane_testowe$stopa_inflacji) %>%
+  mutate(blad_procentowy = round(abs((rzeczywista - prognoza) / 
+                                       rzeczywista) * 100, 1))
+df %>% 
+  ggplot(aes(x = indeks)) +
+  geom_line(aes(y = rzeczywista, color = "wartość rzeczywista"), size = 0.6) +
+  geom_point(aes(y = rzeczywista, color = "wartość rzeczywista"), size = 1.3) +
+  geom_line(aes(y = prognoza, color = "wartość prognozowana"), size = 0.6) +
+  geom_point(aes(y = prognoza, color = "wartość prognozowana"), size = 1.3) +
+  geom_label(aes(y = prognoza, label = paste0(blad_procentowy, "%")),
+    vjust = -0.5, size = 2.7, label.size = 0.2, fill = "white") +
+  scale_color_manual(values = c("wartość rzeczywista" = "blue", 
+                                "wartość prognozowana" = "red"), 
+                     name = NULL) +
+  labs(y = "stopa_inflacji") +
+  theme_linedraw() +
+  theme(axis.title.y = element_text(face = "italic"),
+        axis.title.x = element_blank(),
+        legend.position = "bottom")
+```
+
+**MAPE** = `r round(MAPE,2)`%
+
+Wykres przedstawia stopę inflacji (rzeczywistą i prognozowaną) w latach 2021–2024, gdzie wartości procentowe oznaczają względny błąd prognozy. Model stosunkowo dobrze odwzorowuje ogólny przebieg inflacji -- zarówno kierunek zmian, jak i momenty zwrotne, co świadczy o tym, że poprawnie wychwytuje dominujące trendy makroekonomiczne. W szczególności dobrze odwzorowany jest dynamiczny wzrost inflacji w I połowie 2022 roku.
+
+Od połowy 2022 roku pojawia się jednak systematyczne niedoszacowanie rzeczywistej inflacji. Największe odchylenia występują w 2023 i 2024 roku, gdy prognozowana ścieżka inflacji spada znacznie szybciej niż w rzeczywistości. Uzyskana wartość MAPE wskazuje na umiarkowaną trafność predykcji, szczególnie w dłuższym horyzoncie.
+
+\newpage
+
+# Podsumowanie
+
+Celem projektu była budowa modelu ekonometrycznego wyjaśniającego kwartalne zmiany stopy inflacji w Strefie Euro w latach 2005-2024. W tym celu wykorzystano zmienne makroekonomiczne oparte na źródłach takich jak Eurostat, ECB, ZEW oraz TVC. Projekt zakładał również ocenę zdolności predykcyjnych modelu oraz zgodności interpretacji z intuicją ekonomiczną.
+
+Model został oszacowany metodą najmniejszych kwadratów, po przekształceniu Cochrane’a-Orcutta, w celu wyeliminowania autokorelacji pierwszego rzędu. Do modelu wykorzystano sześć zmiennych objaśniających, opisujących zmiany: wartości indeksu cen importowych, indeksu cen producentów, tempa kredytowania sektora prywatnego, stopy bezrobocia, ceny baryłki ropy Brent oraz wartości indeksu nastrojów ekonomicznych ZEW. Zastosowano również odpowiednie opóźnienia zmiennych o jeden lub dwa kwartały, aby lepiej ukazać zależność przyczynowo-skutkową w relacji do stopy inflacji.
+
+Model przeszedł szereg testów weryfikujących jego poprawność. Dla reszt modelu wykazano zgodność z rozkładem normalnym, brak autokorelacji oraz istotnej heteroskedastyczności. W modelu występuje nieznaczna współliniowość zmiennych objaśniających. Parametry modelu są stabilne, a jego postać analityczna (ściśle liniowa) -- prawidłowa. Uzyskano model koincydentny, a natężenie efektu katalizy uznano za akceptowalne, szczególnie w kontekście wykorzystanych danych makroekonomicznych i charakteru zmiennej objaśnianej.
+
+Model trafnie odwzorowuje ogólne trendy inflacyjne -- fazy wzrostowe i spadkowe, jak również momenty zmian kierunku. Z wykorzystaniem modelu dokonano poprawnej predykcji dynamicznego wzrostu inflacji w latach 2021–2022. Prognoza ex-post wykazała jednak, że w latach 2023–2024 model systematycznie niedoszacowywał rzeczywiste poziomy inflacji. Pomimo umiarkowanej dokładności, szczególnie w okresach długotrwałego wpływu wojny w Ukrainie na ceny surowców i zaburzenia łańcuchów dostaw, model skutecznie identyfikuje główne mechanizmy kształtujące inflację i może stanowić podstawę dalszej analizy.
+
+\newpage
+
+\renewcommand{\listtablename}{Spis tabel}
+\listoftables
+\renewcommand{\listfigurename}{Spis wykresów}
+\listoffigures
